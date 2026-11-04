@@ -67,6 +67,12 @@ describe("factory wiring", () => {
 		expect(spawnMock).not.toHaveBeenCalled(); // no spawn in the factory
 	});
 
+	it("does not call pi.getSettings() during factory load (would throw in real Pi)", () => {
+		const { pi } = mockPi();
+		createCaffeineExtension(pi);
+		expect(pi.getSettings as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+	});
+
 	it("acquires on agent_start and releases on agent_settled", () => {
 		const { pi, calls } = mockPi();
 		createCaffeineExtension(pi);

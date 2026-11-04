@@ -92,10 +92,11 @@ describe("CaffeineManager.acquire", () => {
 		expect(spawns).toHaveLength(0);
 	});
 
-	it("passes maxHoldMinutes through to the holder command", () => {
+	it("passes maxHoldMinutes through to the holder command as the -t arg", () => {
 		const { manager, spawns, ctx } = makeManager({ config: { maxHoldMinutes: 60 } });
 		manager.acquire(ctx);
-		expect(spawns[0].args.join(" ")).toContain("3600");
+		const args = spawns[0].args;
+		expect(args[args.indexOf("-t") + 1]).toBe("3600");
 	});
 
 	it("uses the configured status symbol", () => {
@@ -115,11 +116,17 @@ describe("CaffeineManager.release", () => {
 		expect(statuses.at(-1)).toEqual(["caffeine", undefined]);
 	});
 
-	it("is idempotent: release without a holder does nothing", () => {
-		const { manager, procs, statuses, ctx } = makeManager();
+	it("is idempotent: release without a holder spawns/kills nothing but still syncs the (cleared) status", () => {
+		const { manager, spawns, procs, statuses, ctx } = makeManager();
 		manager.release(ctx);
+		manager.release(ctx);
+		expect(spawns).toHaveLength(0);
 		expect(procs).toHaveLength(0);
-		expect(statuses).toHaveLength(0);
+		// Each release clears the status entry; no holder was ever spawned.
+		expect(statuses).toEqual([
+			["caffeine", undefined],
+			["caffeine", undefined],
+		]);
 	});
 
 	it("SIGKILLs after the grace period if the holder ignores SIGTERM", () => {
@@ -135,6 +142,24 @@ describe("CaffeineManager.release", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("CaffeineManager stale-status fix (reviewer F1)", () => {
+	it("clears the ☕ status when the holder self-exits, using the last ctx", () => {
+		const { manager, procs, statuses, ctx } = makeManager();
+		manager.acquire(ctx);
+		expect(statuses).toEqual([["caffeine", "☕"]]);
+		// Holder dies on its own (watchdog / cap / crash) before agent_settled.
+		procs[0].emit("exit", 0, null);
+		// The exit handler has no ctx, so it uses the captured one from acquire.
+		expect(statuses.at(-1)).toEqual(["caffeine", undefined]);
+	});
+
+	it("release() always syncs the status, even when no holder is held", () => {
+		const { manager, statuses, ctx } = makeManager();
+		manager.release(ctx); // nothing held
+		expect(statuses).toEqual([["caffeine", undefined]]);
 	});
 });
 

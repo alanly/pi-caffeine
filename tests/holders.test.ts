@@ -28,8 +28,8 @@ describe("buildHolderCommand - darwin", () => {
 		expect(cmd.args[cmd.args.indexOf("-t") + 1]).toBe(String(1440 * 60));
 	});
 
-	it("asserts idle, display, user-idle and system sleep", () => {
-		expect(cmd.args.some((a) => a.includes("i") && a.includes("d") && a.includes("u") && a.includes("s") && a.startsWith("-"))).toBe(true);
+	it("asserts the exact flag/value order", () => {
+		expect(cmd.args).toEqual(["-dius", "-w", "4242", "-t", "86400"]);
 	});
 });
 

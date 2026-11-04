@@ -35,6 +35,10 @@ export class CaffeineManager {
 	private readonly logindProbe: LogindProbe;
 	private readonly now: () => number;
 	private killTimer: NodeJS.Timeout | null = null;
+	// Last ctx seen by acquire/release. The holder's exit event fires outside
+	// any event handler and has no ctx parameter, so the captured ctx is the
+	// only way to clear the ☕ status when the holder exits on its own.
+	private lastCtx: ExtensionContext | null = null;
 
 	constructor(options: CaffeineManagerOptions) {
 		this.platform = options.platform ?? detectPlatform(process.platform);
@@ -54,6 +58,7 @@ export class CaffeineManager {
 
 	/** Acquire the assertion if none is held. Idempotent. */
 	acquire(ctx: ExtensionContext): void {
+		this.lastCtx = ctx;
 		if (!this.config.enabled) return;
 		if (this.state.holder !== null) return;
 		if (!this.supported()) return;
@@ -67,11 +72,17 @@ export class CaffeineManager {
 
 		// If the holder exits on its own (watchdog fired, cap reached, or it
 		// was killed), clear the handle so the next acquire can spawn again.
+		// Always clear the pending kill timer and the ☕ status on exit: the
+		// exit event has no ctx, so use the last captured one.
 		proc.on("exit", () => {
 			handle.exited = true;
+			if (this.killTimer !== null) {
+				clearTimeout(this.killTimer);
+				this.killTimer = null;
+			}
 			if (this.state.holder?.proc === proc) {
 				this.state.holder = null;
-				this.clearKillTimer();
+				if (this.lastCtx !== null) this.syncStatus(this.lastCtx);
 			}
 		});
 
@@ -80,19 +91,21 @@ export class CaffeineManager {
 
 	/** Release the assertion. Idempotent. SIGTERM first, SIGKILL after the grace period. */
 	release(ctx: ExtensionContext): void {
+		this.lastCtx = ctx;
 		const holder = this.state.holder;
-		if (holder === null) return;
-		this.state.holder = null;
-
-		holder.proc.kill("SIGTERM");
-		this.killTimer = setTimeout(() => {
-			this.killTimer = null;
-			// SIGKILL only if the holder ignored SIGTERM (has not exited yet).
-			if (!holder.exited) holder.proc.kill("SIGKILL");
-		}, KILL_GRACE_MS);
-		// Do not keep the pi process alive just for this timer.
-		this.killTimer.unref?.();
-
+		if (holder !== null) {
+			this.state.holder = null;
+			holder.proc.kill("SIGTERM");
+			this.killTimer = setTimeout(() => {
+				this.killTimer = null;
+				// SIGKILL only if the holder ignored SIGTERM (has not exited yet).
+				if (!holder.exited) holder.proc.kill("SIGKILL");
+			}, KILL_GRACE_MS);
+			// Do not keep the pi process alive just for this timer.
+			this.killTimer.unref?.();
+		}
+		// Always sync, even when nothing was held, so a stale ☕ from a
+		// self-exited holder is cleared on the next event.
 		this.syncStatus(ctx);
 	}
 
@@ -101,17 +114,11 @@ export class CaffeineManager {
 		const holder = this.state.holder;
 		if (holder === null) {
 			if (!this.supported()) return "wake assertions are not supported on this platform";
+			if (!this.config.enabled) return "wake assertions disabled by settings (caffeine.enabled=false)";
 			return "no wake assertion held";
 		}
 		const minutes = Math.max(0, Math.round((this.now() - holder.startedAt) / 60_000));
 		return `☕ wake assertion held (${holder.platform}, holder pid ${holder.proc.pid ?? "?"}, held for ${minutes} min)`;
-	}
-
-	private clearKillTimer(): void {
-		if (this.killTimer !== null) {
-			clearTimeout(this.killTimer);
-			this.killTimer = null;
-		}
 	}
 
 	private syncStatus(ctx: ExtensionContext): void {

@@ -70,13 +70,18 @@ Initialization (`index.ts`):
 
 ```ts
 export default function (pi: ExtensionAPI) {
-  const manager = new CaffeineManager(pi);
-  pi.on("agent_start", (_event, ctx) => manager.acquire(ctx));
-  pi.on("agent_settled", (_event, ctx) => manager.release(ctx));
-  pi.on("session_shutdown", (_event, ctx) => manager.release(ctx));
+  // pi.getSettings() is an action method: it cannot be called during
+  // extension loading. The manager is created lazily on first use so the
+  // config is read from the merged settings at that point.
+  let manager: CaffeineManager | null = null;
+  const getManager = () =>
+    (manager ??= new CaffeineManager({ config: loadConfig(pi.getSettings()) }));
+  pi.on("agent_start", (_event, ctx) => getManager().acquire(ctx));
+  pi.on("agent_settled", (_event, ctx) => getManager().release(ctx));
+  pi.on("session_shutdown", (_event, ctx) => getManager().release(ctx));
   pi.registerCommand("caffeine", {
     description: "Show the wake-assertion state",
-    handler: async (_args, ctx) => { ctx.ui.notify(manager.describe(), "info"); },
+    handler: async (_args, ctx) => { ctx.ui.notify(getManager().describe(), "info"); },
   });
 }
 ```
@@ -266,9 +271,14 @@ The manager's `exit` handler on the holder:
 
 ```ts
 proc.on("exit", () => {
+  handle.exited = true;
+  // Any exit clears the pending kill timer.
+  if (manager.killTimer !== null) { clearTimeout(manager.killTimer); manager.killTimer = null; }
   if (manager.state.holder?.proc === proc) {
     manager.state.holder = null;
-    // status line is refreshed on the next event handler call
+    // The exit event has no ctx; use the last captured ctx to clear the ☕
+    // so the footer never shows a stale symbol after a self-exit (R4).
+    if (manager.lastCtx !== null) manager.syncStatus(manager.lastCtx);
   }
 });
 ```
@@ -277,9 +287,10 @@ proc.on("exit", () => {
 
 ## 8. Settings
 
-The extension reads optional settings from `pi.getSettings()` at
-`session_start` (not in the factory; the settings API is not available
-during extension loading):
+The extension reads optional settings from `pi.getSettings()` lazily on
+first use (not in the factory and not at `session_start`; the settings API
+is not available during extension loading). The config is cached after the
+first read, so changes apply after a reload:
 
 ```json
 "caffeine": {
