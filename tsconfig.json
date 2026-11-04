@@ -12,6 +12,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "types": ["vitest/globals", "node"]
+
   },
   "include": ["index.ts", "src/**/*.ts", "tests/**/*.ts"]
 }
